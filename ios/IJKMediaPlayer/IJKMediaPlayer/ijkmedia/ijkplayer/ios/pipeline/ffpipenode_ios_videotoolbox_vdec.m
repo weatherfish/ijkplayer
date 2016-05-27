@@ -59,6 +59,7 @@ int decoder_decode_frame_videotoolbox(VideoToolBoxContext* context) {
             do {
                 if (d->queue->nb_packets == 0)
                     SDL_CondSignal(d->empty_queue_cond);
+                ffp_video_statistic_l(ffp);
                 if (ffp_packet_queue_get_or_buffering(ffp, d->queue, &pkt, &d->pkt_serial, &d->finished) < 0)
                     return -1;
                 if (ffp_is_flush_packet(&pkt)) {
@@ -72,7 +73,7 @@ int decoder_decode_frame_videotoolbox(VideoToolBoxContext* context) {
                 }
             } while (ffp_is_flush_packet(&pkt) || d->queue->serial != d->pkt_serial);
 
-            av_free_packet(&d->pkt);
+            av_packet_unref(&d->pkt);
             d->pkt_temp = d->pkt = pkt;
             d->packet_pending = 1;
         }

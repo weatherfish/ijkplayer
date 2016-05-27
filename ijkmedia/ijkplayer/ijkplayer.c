@@ -44,6 +44,10 @@ inline static void ijkmp_destroy(IjkMediaPlayer *mp)
         return;
 
     ffp_destroy_p(&mp->ffplayer);
+    if (mp->msg_thread) {
+        SDL_WaitThread(mp->msg_thread, NULL);
+        mp->msg_thread = NULL;
+    }
 
     pthread_mutex_destroy(&mp->mutex);
 
@@ -141,14 +145,7 @@ void ijkmp_set_inject_opaque(IjkMediaPlayer *mp, void *opaque)
     assert(mp);
 
     MPTRACE("%s(%p)\n", __func__, opaque);
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
-#endif
-    ijkmp_set_option_int(mp, IJKMP_OPT_CATEGORY_FORMAT, "ijkinject-opaque", (int64_t)opaque);
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
+    ffp_set_inject_opaque(mp->ffplayer, opaque);
     MPTRACE("%s()=void\n", __func__);
 }
 
@@ -198,6 +195,29 @@ int ijkmp_get_audio_codec_info(IjkMediaPlayer *mp, char **codec_info)
     return ret;
 }
 
+void ijkmp_set_playback_rate(IjkMediaPlayer *mp, float rate)
+{
+    assert(mp);
+
+    MPTRACE("%s(%f)\n", __func__, rate);
+    pthread_mutex_lock(&mp->mutex);
+    ffp_set_playback_rate(mp->ffplayer, rate);
+    pthread_mutex_unlock(&mp->mutex);
+    MPTRACE("%s()=void\n", __func__);
+}
+
+int ijkmp_set_stream_selected(IjkMediaPlayer *mp, int stream, int selected)
+{
+    assert(mp);
+
+    MPTRACE("%s(%d, %d)\n", __func__, stream, selected);
+    pthread_mutex_lock(&mp->mutex);
+    int ret = ffp_set_stream_selected(mp->ffplayer, stream, selected);
+    pthread_mutex_unlock(&mp->mutex);
+    MPTRACE("%s(%d, %d)=%d\n", __func__, stream, selected, ret);
+    return ret;
+}
+
 float ijkmp_get_property_float(IjkMediaPlayer *mp, int id, float default_value)
 {
     assert(mp);
@@ -206,6 +226,34 @@ float ijkmp_get_property_float(IjkMediaPlayer *mp, int id, float default_value)
     float ret = ffp_get_property_float(mp->ffplayer, id, default_value);
     pthread_mutex_unlock(&mp->mutex);
     return ret;
+}
+
+void ijkmp_set_property_float(IjkMediaPlayer *mp, int id, float value)
+{
+    assert(mp);
+
+    pthread_mutex_lock(&mp->mutex);
+    ffp_set_property_float(mp->ffplayer, id, value);
+    pthread_mutex_unlock(&mp->mutex);
+}
+
+int64_t ijkmp_get_property_int64(IjkMediaPlayer *mp, int id, int64_t default_value)
+{
+    assert(mp);
+
+    pthread_mutex_lock(&mp->mutex);
+    int64_t ret = ffp_get_property_int64(mp->ffplayer, id, default_value);
+    pthread_mutex_unlock(&mp->mutex);
+    return ret;
+}
+
+void ijkmp_set_property_int64(IjkMediaPlayer *mp, int id, int64_t value)
+{
+    assert(mp);
+
+    pthread_mutex_lock(&mp->mutex);
+    ffp_set_property_int64(mp->ffplayer, id, value);
+    pthread_mutex_unlock(&mp->mutex);
 }
 
 IjkMediaMeta *ijkmp_get_meta_l(IjkMediaPlayer *mp)
@@ -300,6 +348,13 @@ int ijkmp_set_data_source(IjkMediaPlayer *mp, const char *url)
     return retval;
 }
 
+static int ijkmp_msg_loop(void *arg)
+{
+    IjkMediaPlayer *mp = arg;
+    int ret = mp->msg_loop(arg);
+    return ret;
+}
+
 static int ijkmp_prepare_async_l(IjkMediaPlayer *mp)
 {
     assert(mp);
@@ -323,7 +378,8 @@ static int ijkmp_prepare_async_l(IjkMediaPlayer *mp)
 
     // released in msg_loop
     ijkmp_inc_ref(mp);
-    mp->msg_thread = SDL_CreateThreadEx(&mp->_msg_thread, mp->msg_loop, mp, "ff_msg_loop");
+    mp->msg_thread = SDL_CreateThreadEx(&mp->_msg_thread, ijkmp_msg_loop, mp, "ff_msg_loop");
+    // msg_thread is detached inside msg_loop
     // TODO: 9 release weak_thiz if pthread_create() failed;
 
     int retval = ffp_prepare_async_l(mp->ffplayer, mp->data_source);
@@ -478,7 +534,7 @@ static int ikjmp_chkst_seek_l(int mp_state)
 {
     MPST_RET_IF_EQ(mp_state, MP_STATE_IDLE);
     MPST_RET_IF_EQ(mp_state, MP_STATE_INITIALIZED);
-    // MPST_RET_IF_EQ(mp_state, MP_STATE_ASYNC_PREPARING);
+    MPST_RET_IF_EQ(mp_state, MP_STATE_ASYNC_PREPARING);
     // MPST_RET_IF_EQ(mp_state, MP_STATE_PREPARED);
     // MPST_RET_IF_EQ(mp_state, MP_STATE_STARTED);
     // MPST_RET_IF_EQ(mp_state, MP_STATE_PAUSED);

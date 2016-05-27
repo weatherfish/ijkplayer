@@ -79,6 +79,7 @@ void ijkmeta_destroy(IjkMediaMeta *meta)
     }
 
     SDL_DestroyMutexP(&meta->mutex);
+    free(meta);
 }
 
 void ijkmeta_destroy_p(IjkMediaMeta **meta)
@@ -149,9 +150,9 @@ void ijkmeta_set_string_l(IjkMediaMeta *meta, const char *name, const char *valu
     av_dict_set(&meta->dict, name, value, 0);
 }
 
-static int get_bit_rate(AVCodecContext *ctx)
+static int64_t get_bit_rate(AVCodecContext *ctx)
 {
-    int bit_rate;
+    int64_t bit_rate;
     int bits_per_sample;
 
     switch (ctx->codec_type) {
@@ -262,6 +263,10 @@ void ijkmeta_set_avformat_context_l(IjkMediaMeta *meta, AVFormatContext *ic)
                 break;
             }
         }
+
+        AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
+        if (lang && lang->value)
+            ijkmeta_set_string_l(stream_meta, IJKM_KEY_LANGUAGE, lang->value);
 
         ijkmeta_append_child_l(meta, stream_meta);
         stream_meta = NULL;

@@ -27,5 +27,4 @@ dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
 }
 
-apply from: '../tools/gradle-mvn-push.gradle'
-apply from: '../tools/gradle-bintray-upload.gradle'
+apply from: new File(rootProject.projectDir, "tools/gradle-on-demand.gradle");

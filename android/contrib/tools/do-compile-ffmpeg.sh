@@ -25,53 +25,22 @@ echo "[*] check env $1"
 echo "===================="
 set -e
 
-UNAME_S=$(uname -s)
-UNAME_SM=$(uname -sm)
-echo "build on $UNAME_SM"
-
-echo "ANDROID_SDK=$ANDROID_SDK"
-echo "ANDROID_NDK=$ANDROID_NDK"
-
-if [ -z "$ANDROID_NDK" -o -z "$ANDROID_SDK" ]; then
-    echo "You must define ANDROID_NDK, ANDROID_SDK before starting."
-    echo "They must point to your NDK and SDK directories."
-    echo ""
-    exit 1
-fi
 
 #--------------------
 # common defines
 FF_ARCH=$1
+FF_BUILD_OPT=$2
+echo "FF_ARCH=$FF_ARCH"
+echo "FF_BUILD_OPT=$FF_BUILD_OPT"
 if [ -z "$FF_ARCH" ]; then
     echo "You must specific an architecture 'arm, armv7a, x86, ...'."
     echo ""
     exit 1
 fi
 
-# try to detect NDK version
-FF_NDK_REL=$(grep -o '^r[0-9]*.*' $ANDROID_NDK/RELEASE.TXT 2>/dev/null|cut -b2-)
-case "$FF_NDK_REL" in
-    9*|10*)
-        # we don't use 4.4.3 because it doesn't handle threads correctly.
-        if test -d ${ANDROID_NDK}/toolchains/arm-linux-androideabi-4.8
-        # if gcc 4.8 is present, it's there for all the archs (x86, mips, arm)
-        then
-            echo "NDKr$FF_NDK_REL detected"
-        else
-            echo "You need the NDKr9 or later"
-            exit 1
-        fi
-    ;;
-    *)
-        echo "You need the NDKr9 or later"
-        exit 1
-    ;;
-esac
 
 FF_BUILD_ROOT=`pwd`
 FF_ANDROID_PLATFORM=android-9
-FF_GCC_VER=4.8
-FF_GCC_64_VER=4.9
 
 
 FF_BUILD_NAME=
@@ -85,28 +54,22 @@ FF_CFG_FLAGS=
 FF_EXTRA_CFLAGS=
 FF_EXTRA_LDFLAGS=
 FF_DEP_LIBS=
-FF_ASM_OBJ_DIR=
+
+FF_MODULE_DIRS="compat libavcodec libavfilter libavformat libavutil libswresample libswscale"
+FF_ASSEMBLER_SUB_DIRS=
+
 
 #--------------------
 echo ""
 echo "--------------------"
 echo "[*] make NDK standalone toolchain"
 echo "--------------------"
-FF_MAKE_TOOLCHAIN_FLAGS=
-case "$UNAME_S" in
-    Darwin)
-        FF_MAKE_TOOLCHAIN_FLAGS="$FF_MAKE_TOOLCHAIN_FLAGS --system=darwin-x86_64"
-    ;;
-    CYGWIN_NT-*)
-        FF_MAKE_TOOLCHAIN_FLAGS="$FF_MAKE_TOOLCHAIN_FLAGS --system=windows-x86_64"
+. ./tools/do-detect-env.sh
+FF_MAKE_TOOLCHAIN_FLAGS=$IJK_MAKE_TOOLCHAIN_FLAGS
+FF_MAKE_FLAGS=$IJK_MAKE_FLAG
+FF_GCC_VER=$IJK_GCC_VER
+FF_GCC_64_VER=$IJK_GCC_64_VER
 
-        FF_WIN_TEMP="$(cygpath -am /tmp)"
-        export TEMPDIR=$FF_WIN_TEMP/
-
-        echo "Cygwin temp prefix=$FF_WIN_TEMP/"
-        #FF_CFG_FLAGS="$FF_CFG_FLAGS --tempprefix=$FF_WIN_TEMP/"
-    ;;
-esac
 
 #----- armv7a begin -----
 if [ "$FF_ARCH" = "armv7a" ]; then
@@ -124,7 +87,7 @@ if [ "$FF_ARCH" = "armv7a" ]; then
     FF_EXTRA_CFLAGS="$FF_EXTRA_CFLAGS -march=armv7-a -mcpu=cortex-a8 -mfpu=vfpv3-d16 -mfloat-abi=softfp -mthumb"
     FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS -Wl,--fix-cortex-a8"
 
-    FF_ASM_OBJ_DIR="libavcodec/arm/*.o libavutil/arm/*.o libswresample/arm/*.o"
+    FF_ASSEMBLER_SUB_DIRS="arm"
 
 elif [ "$FF_ARCH" = "armv5" ]; then
     FF_BUILD_NAME=ffmpeg-armv5
@@ -139,7 +102,7 @@ elif [ "$FF_ARCH" = "armv5" ]; then
     FF_EXTRA_CFLAGS="$FF_EXTRA_CFLAGS -march=armv5te -mtune=arm9tdmi -msoft-float"
     FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS"
 
-    FF_ASM_OBJ_DIR="libavcodec/arm/*.o libavutil/arm/*.o libswresample/arm/*.o"
+    FF_ASSEMBLER_SUB_DIRS="arm"
 
 elif [ "$FF_ARCH" = "x86" ]; then
     FF_BUILD_NAME=ffmpeg-x86
@@ -154,7 +117,24 @@ elif [ "$FF_ARCH" = "x86" ]; then
     FF_EXTRA_CFLAGS="$FF_EXTRA_CFLAGS -march=atom -msse3 -ffast-math -mfpmath=sse"
     FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS"
 
-    FF_ASM_OBJ_DIR="libavcodec/x86/*.o libavfilter/x86/*.o libavutil/x86/*.o libswresample/x86/*.o libswscale/x86/*.o"
+    FF_ASSEMBLER_SUB_DIRS="x86"
+
+elif [ "$FF_ARCH" = "x86_64" ]; then
+    FF_ANDROID_PLATFORM=android-21
+
+    FF_BUILD_NAME=ffmpeg-x86_64
+    FF_BUILD_NAME_OPENSSL=openssl-x86_64
+    FF_SOURCE=$FF_BUILD_ROOT/$FF_BUILD_NAME
+
+    FF_CROSS_PREFIX=x86_64-linux-android
+    FF_TOOLCHAIN_NAME=${FF_CROSS_PREFIX}-${FF_GCC_64_VER}
+
+    FF_CFG_FLAGS="$FF_CFG_FLAGS --arch=x86_64 --enable-yasm"
+
+    FF_EXTRA_CFLAGS="$FF_EXTRA_CFLAGS"
+    FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS"
+
+    FF_ASSEMBLER_SUB_DIRS="x86"
 
 elif [ "$FF_ARCH" = "arm64" ]; then
     FF_ANDROID_PLATFORM=android-21
@@ -171,10 +151,19 @@ elif [ "$FF_ARCH" = "arm64" ]; then
     FF_EXTRA_CFLAGS="$FF_EXTRA_CFLAGS"
     FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS"
 
-    FF_ASM_OBJ_DIR="libavcodec/aarch64/*.o libavutil/aarch64/*.o libswresample/aarch64/*.o libavcodec/neon/*.o"
+    FF_ASSEMBLER_SUB_DIRS="aarch64 neon"
 
 else
     echo "unknown architecture $FF_ARCH";
+    exit 1
+fi
+
+if [ ! -d $FF_SOURCE ]; then
+    echo ""
+    echo "!! ERROR"
+    echo "!! Can not find FFmpeg directory for $FF_BUILD_NAME"
+    echo "!! Run 'sh init-android.sh' first"
+    echo ""
     exit 1
 fi
 
@@ -193,17 +182,10 @@ case "$UNAME_S" in
     ;;
 esac
 
+
 mkdir -p $FF_PREFIX
 mkdir -p $FF_SYSROOT
 
-FF_MAKEFLAGS=
-if which nproc >/dev/null
-then
-    FF_MAKEFLAGS=-j`nproc`
-elif [ "$UNAMES" = "Darwin" ] && which sysctl >/dev/null
-then
-    FF_MAKEFLAGS=-j`sysctl -n machdep.cpu.thread_count`
-fi
 
 FF_TOOLCHAIN_TOUCH="$FF_TOOLCHAIN_PATH/touch"
 if [ ! -f "$FF_TOOLCHAIN_TOUCH" ]; then
@@ -250,6 +232,7 @@ export COMMON_FF_CFG_FLAGS=
 #--------------------
 # with openssl
 if [ -f "${FF_DEP_OPENSSL_LIB}/libssl.a" ]; then
+    echo "OpenSSL detected"
 # FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-nonfree"
     FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-openssl"
 
@@ -275,6 +258,19 @@ FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-pic"
 FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-asm"
 FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-inline-asm"
 
+case "$FF_BUILD_OPT" in
+    debug)
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --disable-optimizations"
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-debug"
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --disable-small"
+    ;;
+    *)
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-optimizations"
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-debug"
+        FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-small"
+    ;;
+esac
+
 #--------------------
 echo ""
 echo "--------------------"
@@ -297,7 +293,7 @@ echo "--------------------"
 echo "[*] compile ffmpeg"
 echo "--------------------"
 cp config.* $FF_PREFIX
-make $FF_MAKEFLAGS
+make $FF_MAKE_FLAGS > /dev/null
 make install
 mkdir -p $FF_PREFIX/include/libffmpeg
 cp -f config.h $FF_PREFIX/include/libffmpeg/config.h
@@ -308,16 +304,31 @@ echo "--------------------"
 echo "[*] link ffmpeg"
 echo "--------------------"
 echo $FF_EXTRA_LDFLAGS
+
+FF_C_OBJ_FILES=
+FF_ASM_OBJ_FILES=
+for MODULE_DIR in $FF_MODULE_DIRS
+do
+    C_OBJ_FILES="$MODULE_DIR/*.o"
+    if ls $C_OBJ_FILES 1> /dev/null 2>&1; then
+        echo "link $MODULE_DIR/*.o"
+        FF_C_OBJ_FILES="$FF_C_OBJ_FILES $C_OBJ_FILES"
+    fi
+
+    for ASM_SUB_DIR in $FF_ASSEMBLER_SUB_DIRS
+    do
+        ASM_OBJ_FILES="$MODULE_DIR/$ASM_SUB_DIR/*.o"
+        if ls $ASM_OBJ_FILES 1> /dev/null 2>&1; then
+            echo "link $MODULE_DIR/$ASM_SUB_DIR/*.o"
+            FF_ASM_OBJ_FILES="$FF_ASM_OBJ_FILES $ASM_OBJ_FILES"
+        fi
+    done
+done
+
 $CC -lm -lz -shared --sysroot=$FF_SYSROOT -Wl,--no-undefined -Wl,-z,noexecstack $FF_EXTRA_LDFLAGS \
     -Wl,-soname,libijkffmpeg.so \
-    compat/*.o \
-    libavcodec/*.o \
-    libavfilter/*.o \
-    libavformat/*.o \
-    libavutil/*.o \
-    libswresample/*.o \
-    libswscale/*.o \
-    $FF_ASM_OBJ_DIR \
+    $FF_C_OBJ_FILES \
+    $FF_ASM_OBJ_FILES \
     $FF_DEP_LIBS \
     -o $FF_PREFIX/libijkffmpeg.so
 

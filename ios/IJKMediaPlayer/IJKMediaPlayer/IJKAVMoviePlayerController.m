@@ -73,10 +73,14 @@
 #import "IJKMediaModule.h"
 #import "IJKMediaUtils.h"
 #import "IJKKVOController.h"
+#import "IJKNotificationManager.h"
 #include "ijksdl/ios/ijksdl_ios.h"
 
 // avoid float equal compare
-static const float kMinPlayingRate          = 0.00001f;
+inline static bool isFloatZero(float value)
+{
+    return fabsf(value) <= 0.00001f;
+}
 
 // resume play after stall
 static const float kMaxHighWaterMarkMilli   = 15 * 1000;
@@ -119,7 +123,7 @@ static void *KVO_AVPlayerItem_playbackBufferEmpty       = &KVO_AVPlayerItem_play
     IJKKVOController *_playerItemKVO;
     
     id _timeObserver;
-    
+    dispatch_once_t _readyToPlayToken;
     // while AVPlayer is prerolling, it could resume itself.
     // foring start could
     BOOL _isPrerolling;
@@ -137,8 +141,10 @@ static void *KVO_AVPlayerItem_playbackBufferEmpty       = &KVO_AVPlayerItem_play
     BOOL _playbackBufferFull;
     
     BOOL _playingBeforeInterruption;
-    
-    NSMutableArray *_registeredNotifications;
+
+    IJKNotificationManager *_notificationManager;
+
+    float _playbackRate;
 }
 
 @synthesize view                        = _view;
@@ -152,7 +158,6 @@ static void *KVO_AVPlayerItem_playbackBufferEmpty       = &KVO_AVPlayerItem_play
 @synthesize playbackState               = _playbackState;
 @synthesize loadState                   = _loadState;
 
-@synthesize controlStyle                = _controlStyle;
 @synthesize scalingMode                 = _scalingMode;
 @synthesize shouldAutoplay              = _shouldAutoplay;
 @synthesize isDanmakuMediaAirPlay       = _isDanmakuMediaAirPlay;
@@ -163,8 +168,7 @@ static IJKAVMoviePlayerController* instance;
 {
     self = [super init];
     if (self != nil) {
-        self.controlStyle = MPMovieControlStyleNone;
-        self.scalingMode = MPMovieScalingModeAspectFit;
+        self.scalingMode = IJKMPMovieScalingModeAspectFit;
         self.shouldAutoplay = NO;
 
         _playUrl = aUrl;
@@ -186,10 +190,12 @@ static IJKAVMoviePlayerController* instance;
         _playbackBufferEmpty    = YES;
         _playbackBufferFull     = NO;
 
+        _playbackRate           = 1.0f;
+
         // init extra
         [self setScreenOn:YES];
 
-        _registeredNotifications = [[NSMutableArray alloc] init];
+        _notificationManager = [[IJKNotificationManager alloc] init];
     }
     return self;
 }
@@ -227,7 +233,6 @@ static IJKAVMoviePlayerController* instance;
 - (void)setScreenOn: (BOOL)on
 {
     [IJKMediaModule sharedModule].mediaModuleIdleTimerDisabled = on;
-    // [UIApplication sharedApplication].idleTimerDisabled = on;
 }
 
 - (void)dealloc
@@ -245,6 +250,9 @@ static IJKAVMoviePlayerController* instance;
                          completionHandler:^{
                              dispatch_async( dispatch_get_main_queue(), ^{
                                  [self didPrepareToPlayAsset:asset withKeys:requestedKeys];
+                                 [[NSNotificationCenter defaultCenter]
+                                  postNotificationName:IJKMPMovieNaturalSizeAvailableNotification
+                                  object:self];
                              });
                          }];
 }
@@ -269,12 +277,13 @@ static IJKAVMoviePlayerController* instance;
 - (void)stop
 {
     [_player pause];
+    [self setScreenOn:NO];
     _isCompleted = YES;
 }
 
 - (BOOL)isPlaying
 {
-    if (_player.rate >= kMinPlayingRate) {
+    if (!isFloatZero(_player.rate)) {
         return YES;
     } else {
         if (_isPrerolling) {
@@ -328,6 +337,7 @@ static IJKAVMoviePlayerController* instance;
 
     _seekingTime = aCurrentPlaybackTime;
     _isSeeking = YES;
+    _bufferingProgress = 0;
     [self didPlaybackStateChange];
     [self didLoadStateChange];
     if (_isPrerolling) {
@@ -360,70 +370,83 @@ static IJKAVMoviePlayerController* instance;
 
 -(int64_t)numberOfBytesTransferred
 {
+#if 0
     if (_player == nil)
         return 0;
-    
+
     AVPlayerItem *playerItem = [_player currentItem];
     if (playerItem == nil)
         return 0;
-    
+
     NSArray *events = playerItem.accessLog.events;
     if (events != nil && events.count > 0) {
         MPMovieAccessLogEvent *currentEvent = [events objectAtIndex:events.count -1];
         return currentEvent.numberOfBytesTransferred;
     }
+#endif
     return 0;
 }
 
-- (MPMoviePlaybackState)playbackState
+- (IJKMPMoviePlaybackState)playbackState
 {
     if (!_player)
-        return MPMoviePlaybackStateStopped;
+        return IJKMPMoviePlaybackStateStopped;
     
-    MPMoviePlaybackState mpState = MPMoviePlaybackStateStopped;
+    IJKMPMoviePlaybackState mpState = IJKMPMoviePlaybackStateStopped;
     if (_isCompleted) {
-        mpState = MPMoviePlaybackStateStopped;
+        mpState = IJKMPMoviePlaybackStateStopped;
     } else if (_isSeeking) {
-        mpState = MPMoviePlaybackStateSeekingForward;
+        mpState = IJKMPMoviePlaybackStateSeekingForward;
     } else if ([self isPlaying]) {
-        mpState = MPMoviePlaybackStatePlaying;
+        mpState = IJKMPMoviePlaybackStatePlaying;
     } else {
-        mpState = MPMoviePlaybackStatePaused;
+        mpState = IJKMPMoviePlaybackStatePaused;
     }
     return mpState;
 }
 
-- (MPMovieLoadState)loadState
+- (IJKMPMovieLoadState)loadState
 {
     if (_player == nil)
-        return MPMovieLoadStateUnknown;
+        return IJKMPMovieLoadStateUnknown;
     
     if (_isSeeking)
-        return MPMovieLoadStateStalled;
+        return IJKMPMovieLoadStateStalled;
     
     AVPlayerItem *playerItem = [_player currentItem];
     if (playerItem == nil)
-        return MPMovieLoadStateUnknown;
+        return IJKMPMovieLoadStateUnknown;
     
-    if (_player != nil && _player.rate > kMinPlayingRate) {
+    if (_player != nil && !isFloatZero(_player.rate)) {
         // NSLog(@"loadState: playing");
-        return MPMovieLoadStatePlayable | MPMovieLoadStatePlaythroughOK;
+        return IJKMPMovieLoadStatePlayable | IJKMPMovieLoadStatePlaythroughOK;
     } else if ([playerItem isPlaybackBufferFull]) {
         // NSLog(@"loadState: isPlaybackBufferFull");
-        return MPMovieLoadStatePlayable | MPMovieLoadStatePlaythroughOK;
+        return IJKMPMovieLoadStatePlayable | IJKMPMovieLoadStatePlaythroughOK;
     } else if ([playerItem isPlaybackLikelyToKeepUp]) {
         // NSLog(@"loadState: isPlaybackLikelyToKeepUp");
-        return MPMovieLoadStatePlayable | MPMovieLoadStatePlaythroughOK;
+        return IJKMPMovieLoadStatePlayable | IJKMPMovieLoadStatePlaythroughOK;
     } else if ([playerItem isPlaybackBufferEmpty]) {
         // NSLog(@"loadState: isPlaybackBufferEmpty");
-        return MPMovieLoadStateStalled;
+        return IJKMPMovieLoadStateStalled;
     } else {
         NSLog(@"loadState: unknown");
-        return MPMovieLoadStateUnknown;
+        return IJKMPMovieLoadStateUnknown;
     }
 }
 
+-(void)setPlaybackRate:(float)playbackRate
+{
+    _playbackRate = playbackRate;
+    if (_player != nil && !isFloatZero(_player.rate)) {
+        _player.rate = _playbackRate;
+    }
+}
 
+-(float)playbackRate
+{
+    return _playbackRate;
+}
 
 
 - (void)didPrepareToPlayAsset:(AVURLAsset *)asset withKeys:(NSArray *)requestedKeys
@@ -561,7 +584,7 @@ static IJKAVMoviePlayerController* instance;
     if (_playbackState != self.playbackState) {
         _playbackState = self.playbackState;
         [[NSNotificationCenter defaultCenter]
-         postNotificationName:IJKMoviePlayerPlaybackStateDidChangeNotification
+         postNotificationName:IJKMPMoviePlayerPlaybackStateDidChangeNotification
          object:self];
     }
     
@@ -585,7 +608,7 @@ static IJKAVMoviePlayerController* instance;
     // Rely on AVPlayer's auto resume.
     
     [[NSNotificationCenter defaultCenter]
-     postNotificationName:IJKMoviePlayerLoadStateDidChangeNotification
+     postNotificationName:IJKMPMoviePlayerLoadStateDidChangeNotification
      object:self];
 }
 
@@ -603,7 +626,7 @@ static IJKAVMoviePlayerController* instance;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (self.bufferingProgress > 100) {
                     if ([self isPlaying]) {
-                        _player.rate = 1.0f;
+                        _player.rate = _playbackRate;
                     }
                 }
             });
@@ -626,16 +649,17 @@ static IJKAVMoviePlayerController* instance;
     dispatch_async(dispatch_get_main_queue(), ^{
         [self didPlaybackStateChange];
         [self didLoadStateChange];
-        
+        [self setScreenOn:NO];
+ 
         if (blockError == nil) {
             blockError = [[NSError alloc] init];
         }
         
         [[NSNotificationCenter defaultCenter]
-         postNotificationName:IJKMoviePlayerPlaybackDidFinishNotification
+         postNotificationName:IJKMPMoviePlayerPlaybackDidFinishNotification
          object:self
          userInfo:@{
-                    MPMoviePlayerPlaybackDidFinishReasonUserInfoKey: @(MPMovieFinishReasonPlaybackError),
+                    IJKMPMoviePlayerPlaybackDidFinishReasonUserInfoKey: @(IJKMPMovieFinishReasonPlaybackError),
                     @"error": blockError
                     }];
     });
@@ -667,12 +691,13 @@ static IJKAVMoviePlayerController* instance;
     dispatch_async(dispatch_get_main_queue(), ^{
         [self didPlaybackStateChange];
         [self didLoadStateChange];
-        
+        [self setScreenOn:NO];
+ 
         [[NSNotificationCenter defaultCenter]
-         postNotificationName:IJKMoviePlayerPlaybackDidFinishNotification
+         postNotificationName:IJKMPMoviePlayerPlaybackDidFinishNotification
          object:self
          userInfo:@{
-                    MPMoviePlayerPlaybackDidFinishReasonUserInfoKey: @(MPMovieFinishReasonPlaybackEnded)
+                    IJKMPMoviePlayerPlaybackDidFinishReasonUserInfoKey: @(IJKMPMovieFinishReasonPlaybackEnded)
                     }];
     });
 }
@@ -706,22 +731,24 @@ static IJKAVMoviePlayerController* instance;
                 /* Once the AVPlayerItem becomes ready to play, i.e.
                  [playerItem status] == AVPlayerItemStatusReadyToPlay,
                  its duration can be fetched from the item. */
-                [_avView setPlayer:_player];
-                
-                self.isPreparedToPlay = YES;
-                AVPlayerItem *playerItem = (AVPlayerItem *)object;
-                NSTimeInterval duration = CMTimeGetSeconds(playerItem.duration);
-                if (duration <= 0)
-                    self.duration = 0.0f;
-                else
-                    self.duration = duration;
-                
-                [[NSNotificationCenter defaultCenter]
-                 postNotificationName:IJKMediaPlaybackIsPreparedToPlayDidChangeNotification
-                 object:self];
-
-                if (_shouldAutoplay)
-                    [_player play];
+                dispatch_once(&_readyToPlayToken, ^{
+                    [_avView setPlayer:_player];
+                    
+                    self.isPreparedToPlay = YES;
+                    AVPlayerItem *playerItem = (AVPlayerItem *)object;
+                    NSTimeInterval duration = CMTimeGetSeconds(playerItem.duration);
+                    if (duration <= 0)
+                        self.duration = 0.0f;
+                    else
+                        self.duration = duration;
+                    
+                    [[NSNotificationCenter defaultCenter]
+                     postNotificationName:IJKMPMediaPlaybackIsPreparedToPlayDidChangeNotification
+                     object:self];
+                    
+                    if (_shouldAutoplay && (!_pauseInBackground || [UIApplication sharedApplication].applicationState == UIApplicationStateActive))
+                        [_player play];
+                });
             }
                 break;
                 
@@ -791,7 +818,7 @@ static IJKAVMoviePlayerController* instance;
     }
     else if (context == KVO_AVPlayer_rate)
     {
-        if (_player != nil && _player.rate >= kMinPlayingRate)
+        if (_player != nil && !isFloatZero(_player.rate))
             _isPrerolling = NO;
         /* AVPlayer "rate" property value observer. */
         [self didPlaybackStateChange];
@@ -823,7 +850,7 @@ static IJKAVMoviePlayerController* instance;
     }
     else if (context == KVO_AVPlayer_airplay)
     {
-        [[NSNotificationCenter defaultCenter] postNotificationName:IJKMoviePlayerIsAirPlayVideoActiveDidChangeNotification object:nil userInfo:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:IJKMPMoviePlayerIsAirPlayVideoActiveDidChangeNotification object:nil userInfo:nil];
     }
     else
     {
@@ -847,51 +874,40 @@ static IJKAVMoviePlayerController* instance;
 
 - (void)registerApplicationObservers
 {
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(audioSessionInterrupt:)
-                                                 name:AVAudioSessionInterruptionNotification
-                                               object:nil];
-    [_registeredNotifications addObject:AVAudioSessionInterruptionNotification];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationWillEnterForeground)
-                                                 name:UIApplicationWillEnterForegroundNotification
-                                               object:nil];
-    [_registeredNotifications addObject:UIApplicationWillEnterForegroundNotification];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationDidBecomeActive)
-                                                 name:UIApplicationDidBecomeActiveNotification
-                                               object:nil];
-    [_registeredNotifications addObject:UIApplicationDidBecomeActiveNotification];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationWillResignActive)
-                                                 name:UIApplicationWillResignActiveNotification
-                                               object:nil];
-    [_registeredNotifications addObject:UIApplicationWillResignActiveNotification];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationDidEnterBackground)
-                                                 name:UIApplicationDidEnterBackgroundNotification
-                                               object:nil];
-    [_registeredNotifications addObject:UIApplicationDidEnterBackgroundNotification];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationWillTerminate)
-                                                 name:UIApplicationWillTerminateNotification
-                                               object:nil];
-    [_registeredNotifications addObject:UIApplicationWillTerminateNotification];
-    
+    [_notificationManager addObserver:self
+                             selector:@selector(audioSessionInterrupt:)
+                                 name:AVAudioSessionInterruptionNotification
+                               object:nil];
+
+    [_notificationManager addObserver:self
+                             selector:@selector(applicationWillEnterForeground)
+                                 name:UIApplicationWillEnterForegroundNotification
+                               object:nil];
+
+    [_notificationManager addObserver:self
+                             selector:@selector(applicationDidBecomeActive)
+                                 name:UIApplicationDidBecomeActiveNotification
+                               object:nil];
+
+    [_notificationManager addObserver:self
+                             selector:@selector(applicationWillResignActive)
+                                 name:UIApplicationWillResignActiveNotification
+                               object:nil];
+
+    [_notificationManager addObserver:self
+                             selector:@selector(applicationDidEnterBackground)
+                                 name:UIApplicationDidEnterBackgroundNotification
+                               object:nil];
+
+    [_notificationManager addObserver:self
+                             selector:@selector(applicationWillTerminate)
+                                 name:UIApplicationWillTerminateNotification
+                               object:nil];
 }
 
 - (void)unregisterApplicationObservers
 {
-    for (NSString *name in _registeredNotifications) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                        name:name
-                                                      object:nil];
-    }
+    [_notificationManager removeAllObservers:self];
 }
 
 -(BOOL)allowsMediaAirPlay
@@ -927,20 +943,20 @@ static IJKAVMoviePlayerController* instance;
     return [videoTracks objectAtIndex:0].naturalSize;
 }
 
-- (void)setScalingMode: (MPMovieScalingMode) aScalingMode
+- (void)setScalingMode: (IJKMPMovieScalingMode) aScalingMode
 {
-    MPMovieScalingMode newScalingMode = aScalingMode;
+    IJKMPMovieScalingMode newScalingMode = aScalingMode;
     switch (aScalingMode) {
-        case MPMovieScalingModeNone:
+        case IJKMPMovieScalingModeNone:
             [_view setContentMode:UIViewContentModeCenter];
             break;
-        case MPMovieScalingModeAspectFit:
+        case IJKMPMovieScalingModeAspectFit:
             [_view setContentMode:UIViewContentModeScaleAspectFit];
             break;
-        case MPMovieScalingModeAspectFill:
+        case IJKMPMovieScalingModeAspectFill:
             [_view setContentMode:UIViewContentModeScaleAspectFill];
             break;
-        case MPMovieScalingModeFill:
+        case IJKMPMovieScalingModeFill:
             [_view setContentMode:UIViewContentModeScaleToFill];
             break;
         default:
@@ -963,7 +979,7 @@ static IJKAVMoviePlayerController* instance;
 -(void)setIsDanmakuMediaAirPlay:(BOOL)isDanmakuMediaAirPlay
 {
     _isDanmakuMediaAirPlay = isDanmakuMediaAirPlay;
-    [[NSNotificationCenter defaultCenter] postNotificationName:IJKMoviePlayerIsAirPlayVideoActiveDidChangeNotification object:nil userInfo:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:IJKMPMoviePlayerIsAirPlayVideoActiveDidChangeNotification object:nil userInfo:nil];
 }
 
 - (void)audioSessionInterrupt:(NSNotification *)notification
@@ -973,8 +989,8 @@ static IJKAVMoviePlayerController* instance;
         case AVAudioSessionInterruptionTypeBegan: {
             NSLog(@"IJKAVMoviePlayerController:audioSessionInterrupt: begin\n");
             switch (self.playbackState) {
-                case MPMoviePlaybackStatePaused:
-                case MPMoviePlaybackStateStopped:
+                case IJKMPMoviePlaybackStatePaused:
+                case IJKMPMoviePlaybackStateStopped:
                     _playingBeforeInterruption = NO;
                     break;
                 default:

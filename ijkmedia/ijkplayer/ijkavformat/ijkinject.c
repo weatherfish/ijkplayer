@@ -38,20 +38,6 @@ typedef struct Context {
     int             segment_index;
 } Context;
 
-#if 0
-static void *ijkinject_get_opaque(URLContext *h) {
-    Context *c = h->priv_data;
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
-#endif
-    return (void *)c->opaque;
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
-}
-#endif
-
 static int ijkinject_open(URLContext *h, const char *arg, int flags, AVDictionary **options)
 {
     Context *c = h->priv_data;
@@ -63,7 +49,7 @@ static int ijkinject_open(URLContext *h, const char *arg, int flags, AVDictionar
 
     av_dict_set_int(options, "ijkinject-opaque",        c->opaque, 0);
     av_dict_set_int(options, "ijkinject-segment-index", c->segment_index, 0);
-    ret = ffurl_open(&c->inner, arg, flags, &h->interrupt_callback, options);
+    ret = ffurl_open_whitelist(&c->inner, arg, flags, &h->interrupt_callback, options, h->protocol_whitelist);
     if (ret)
         goto fail;
 
