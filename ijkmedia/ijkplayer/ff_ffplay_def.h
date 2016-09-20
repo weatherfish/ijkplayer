@@ -101,7 +101,7 @@
 /* AV sync correction is done if above the maximum AV sync threshold */
 #define AV_SYNC_THRESHOLD_MAX 0.1
 /* If a frame duration is longer than this, it will not be duplicated to compensate AV sync */
-#define AV_SYNC_FRAMEDUP_THRESHOLD 0.1
+#define AV_SYNC_FRAMEDUP_THRESHOLD 0.15
 /* no AV correction is done if too big error */
 #define AV_NOSYNC_THRESHOLD 100.0
 
@@ -293,7 +293,6 @@ typedef struct VideoState {
     AVStream *audio_st;
     PacketQueue audioq;
     int audio_hw_buf_size;
-    uint8_t silence_buf[SDL_AUDIO_MIN_BUFFER_SIZE];
     uint8_t *audio_buf;
     uint8_t *audio_buf1;
     unsigned int audio_buf_size; /* in bytes */
@@ -378,6 +377,9 @@ typedef struct VideoState {
     int is_video_high_res; // above 1080p
 
     PacketQueue *buffer_indicator_queue;
+
+    volatile int latest_seek_load_serial;
+    volatile int64_t latest_seek_load_start_at;
 } VideoState;
 
 /* options specified by the user */
@@ -462,7 +464,11 @@ typedef struct FFStatistic
     FFTrackCacheStatistic video_cache;
     FFTrackCacheStatistic audio_cache;
 
+    int64_t buf_backwards;
+    int64_t buf_forwards;
+    int64_t buf_capacity;
     SDL_SpeedSampler2 tcp_read_sampler;
+    int64_t latest_seek_load_duration;
 } FFStatistic;
 
 #define FFP_TCP_READ_SAMPLE_RANGE 2000
@@ -511,6 +517,7 @@ typedef struct FFPlayer {
     AVDictionary *sws_dict;
     AVDictionary *player_opts;
     AVDictionary *swr_opts;
+    AVDictionary *swr_preset_opts;
 
     /* ffplay options specified by the user */
 #ifdef FFP_MERGE
@@ -615,11 +622,14 @@ typedef struct FFPlayer {
     int vtb_max_frame_width;
     int vtb_async;
     int vtb_wait_async;
+    int vtb_handle_resolution_change;
 
     int mediacodec_all_videos;
     int mediacodec_avc;
     int mediacodec_hevc;
     int mediacodec_mpeg2;
+    int mediacodec_mpeg4;
+    int mediacodec_handle_resolution_change;
     int mediacodec_auto_rotate;
 
     int opensles;
@@ -627,6 +637,7 @@ typedef struct FFPlayer {
     char *iformat_name;
 
     int no_time_adjust;
+    double preset_5_1_center_mix_level;
 
     struct IjkMediaMeta *meta;
 
@@ -662,6 +673,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     av_dict_free(&ffp->sws_dict);
     av_dict_free(&ffp->player_opts);
     av_dict_free(&ffp->swr_opts);
+    av_dict_free(&ffp->swr_preset_opts);
 
     /* ffplay options specified by the user */
     av_freep(&ffp->input_filename);
@@ -730,12 +742,14 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->videotoolbox                   = 0; // option
     ffp->vtb_max_frame_width            = 0; // option
     ffp->vtb_async                      = 0; // option
+    ffp->vtb_handle_resolution_change   = 0; // option
     ffp->vtb_wait_async                 = 0; // option
 
     ffp->mediacodec_all_videos          = 0; // option
     ffp->mediacodec_avc                 = 0; // option
     ffp->mediacodec_hevc                = 0; // option
     ffp->mediacodec_mpeg2               = 0; // option
+    ffp->mediacodec_handle_resolution_change = 0; // option
     ffp->mediacodec_auto_rotate         = 0; // option
 
     ffp->opensles                       = 0; // option
