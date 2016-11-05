@@ -2,8 +2,8 @@
 
 set -e
 
-VERSION_CODE=602000
-VERSION_NAME=0.6.2
+VERSION_CODE=700100
+VERSION_NAME=0.7.2
 VERSION_TARGET=$1
 
 do_version_readme() {
@@ -43,16 +43,27 @@ do_version_gradle() {
 
     # android/ijkplayer/ijkplayer-exo/build.gradle
     cat android/ijkplayer/ijkplayer-exo/build.gradle \
-    | sed "s/\(compile \'tv.danmaku.ijk.media:ijkplayer-java:\)[[:digit:].]*[[:digit:]]/\1$VERSION_NAME/g" \
+    | sed "s/\(compile \'tv.danmaku.ijk.media:ijkplayer-[-_[:alpha:][:digit:]]*:\)[[:digit:].]*[[:digit:]]/\1$VERSION_NAME/g" \
     > android/ijkplayer/ijkplayer-exo/build.gradle.new
 
     mv -f android/ijkplayer/ijkplayer-exo/build.gradle.new android/ijkplayer/ijkplayer-exo/build.gradle
+
+
+
+    # android/ijkplayer/ijkplayer-example/build.gradle
+    cat android/ijkplayer/ijkplayer-example/build.gradle \
+    | sed "s/\(ompile \'tv.danmaku.ijk.media:ijkplayer-[-_[:alpha:][:digit:]]*:\)[[:digit:].]*[[:digit:]]/\1$VERSION_NAME/g" \
+    > android/ijkplayer/ijkplayer-example/build.gradle.new
+
+    mv -f android/ijkplayer/ijkplayer-example/build.gradle.new android/ijkplayer/ijkplayer-example/build.gradle
 }
 
 if [ "$VERSION_TARGET" = "readme" ]; then
     do_version_readme
 elif [ "$VERSION_TARGET" = "gradle" ]; then
     do_version_gradle
+elif [ "$VERSION_TARGET" = "show" ]; then
+    echo $VERSION_NAME
 else
     do_version_readme
     do_version_gradle

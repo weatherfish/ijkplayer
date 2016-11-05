@@ -1,5 +1,16 @@
 tag next
 --------------------------------
+tag k0.7.2
+- ios: fix a compile error
+
+tag k0.7.1
+-------------------------------
+- ffmpeg: upgrade to n3.2
+
+tag k0.6.3
+--------------------------------
+- ffmpeg: disable clock_gettime added in xcode8
+- android: make NDKr13 happy
 
 tag k0.6.2
 --------------------------------
