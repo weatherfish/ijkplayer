@@ -192,7 +192,7 @@ typedef struct Frame {
     double pts;           /* presentation timestamp for the frame */
     double duration;      /* estimated duration of the frame */
     int64_t pos;          /* byte position of the frame in the input file */
-#ifdef FF_MERGE
+#ifdef FFP_MERGE
     SDL_Texture *bmp;
 #else
     SDL_VoutOverlay *bmp;
@@ -202,7 +202,7 @@ typedef struct Frame {
     int height;
     int format;
     AVRational sar;
-#ifdef FF_MERGE
+#ifdef FFP_MERGE
     int uploaded;
 #endif
 } Frame;
@@ -656,6 +656,8 @@ typedef struct FFPlayer {
     int         af_changed;
     float       pf_playback_rate;
     int         pf_playback_rate_changed;
+    float       pf_playback_volume;
+    int         pf_playback_volume_changed;
 
     void               *inject_opaque;
     FFStatistic         stat;
@@ -773,6 +775,8 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->af_changed                     = 0;
     ffp->pf_playback_rate               = 1.0f;
     ffp->pf_playback_rate_changed       = 0;
+    ffp->pf_playback_volume             = 1.0f;
+    ffp->pf_playback_volume_changed     = 0;
 
     av_application_closep(&ffp->app_ctx);
 
