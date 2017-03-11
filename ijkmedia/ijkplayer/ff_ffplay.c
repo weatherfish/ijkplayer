@@ -2754,7 +2754,7 @@ static int read_thread(void *arg)
     }
     /* offset should be seeked*/
     if (ffp->seek_at_start > 0) {
-        ffp_seek_to_l(ffp, ffp->seek_at_start);
+        ffp_seek_to_l(ffp, (long)(ffp->seek_at_start));
     }
 
     for (;;) {
@@ -3898,7 +3898,7 @@ void ffp_track_statistic_l(FFPlayer *ffp, AVStream *st, PacketQueue *q, FFTrackC
         cache->packets = q->nb_packets;
     }
 
-    if (st && st->time_base.den > 0 && st->time_base.num > 0) {
+    if (q && st && st->time_base.den > 0 && st->time_base.num > 0) {
         cache->duration = q->duration * av_q2d(st->time_base) * 1000;
     }
 }
